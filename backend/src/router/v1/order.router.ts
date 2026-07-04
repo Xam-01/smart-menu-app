@@ -10,6 +10,7 @@ import createOrder from 'src/controller/v1/order/create_order';
 import getOrders from 'src/controller/v1/order/get_orders';
 import updateOrderStatus from 'src/controller/v1/order/update_order_status';
 import getSessionOrders from 'src/controller/v1/order/get_session_orders';
+import cashPayment from 'src/controller/v1/order/cash_payment';
 import validationError from 'src/middleware/validationError';
 import { authenticate } from 'src/middleware/auth.middleware';
 
@@ -62,6 +63,13 @@ router.get(
   [param('sessionId').notEmpty()],
   validationError,
   getSessionOrders,
+);
+
+router.post(
+  '/session/:sessionId/cash-payment',
+  [param('sessionId').notEmpty()],
+  validationError,
+  cashPayment,
 );
 
 export default router;

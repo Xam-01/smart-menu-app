@@ -13,11 +13,30 @@ import type {
   Session,
   SessionInput,
 } from './types';
+import { createMockApiFetch } from './mockApi';
 
 export const ACCESS_TOKEN_KEY = 'smart-menu-access-token';
 
 type QueryValue = string | number | boolean | undefined | null;
 type Fetcher = typeof fetch;
+
+export type SystemInfo = {
+  message?: string;
+  status: string;
+  version?: string;
+  environment?: string;
+  uptime?: number;
+  server?: string;
+  docs?: string;
+  timestamp?: string;
+};
+
+export type HealthInfo = {
+  status: string;
+  timestamp: string;
+  service?: string;
+  uptime?: number;
+};
 
 export class ApiError extends Error {
   status: number;
@@ -43,9 +62,11 @@ type RequestOptions = {
 export function createApiClient({
   baseUrl,
   fetcher = fetch,
+  fallbackFetcher,
 }: {
   baseUrl: string;
   fetcher?: Fetcher;
+  fallbackFetcher?: Fetcher;
 }) {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
 
@@ -72,12 +93,20 @@ export function createApiClient({
       if (token) headers.Authorization = `Bearer ${token}`;
     }
 
-    const response = await fetcher(url.toString(), {
+    const requestInit: RequestInit = {
       method,
       credentials: 'omit',
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
+    };
+
+    let response: Response;
+    try {
+      response = await fetcher(url.toString(), requestInit);
+    } catch (err) {
+      if (!fallbackFetcher) throw err;
+      response = await fallbackFetcher(url.toString(), requestInit);
+    }
 
     const payload = await readJson(response);
     if (!response.ok || payload?.success === false) {
@@ -118,8 +147,13 @@ async function readJson(response: Response) {
   }
 }
 
+const mockApiFetch = createMockApiFetch();
+const useMockApi = import.meta.env.VITE_USE_MOCK_API === 'true';
+
 const api = createApiClient({
   baseUrl: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000/api/v1',
+  fetcher: useMockApi ? mockApiFetch : fetch,
+  fallbackFetcher: import.meta.env.DEV && !useMockApi ? mockApiFetch : undefined,
 });
 
 export const authApi = {
@@ -127,6 +161,18 @@ export const authApi = {
     api.post<LoginResult>('/auth/login', { email, password }, false),
   register: (email: string, password: string) =>
     api.post<LoginResult>('/auth/register', { email, password }, false),
+  refreshToken: (refreshToken?: string) =>
+    api.post<{ accessToken: string; refreshToken?: string }>(
+      '/auth/refresh-token',
+      refreshToken ? { refreshToken } : undefined,
+      false,
+    ),
+  logout: () => api.post<{ loggedOut: boolean }>('/auth/logout'),
+};
+
+export const systemApi = {
+  getRoot: () => api.get<SystemInfo>('/', undefined, false),
+  getHealth: () => api.get<HealthInfo>('/health', undefined, false),
 };
 
 export const ownerApi = {
@@ -143,6 +189,7 @@ export const ownerApi = {
   getMenus: () => api.get<Menu[]>('/menus'),
   uploadMenu: (imagePath?: string) => api.post<Menu>('/menus/upload', { imagePath }),
   publishMenu: (menuId: string) => api.post<Menu>(`/menus/${menuId}/publish`),
+  deleteMenu: (menuId: string) => api.delete<Menu>(`/menus/${menuId}`),
   getItems: (menuId: string, query?: { category?: string; status?: string }) =>
     api.get<OwnerMenuItem[]>(`/menus/${menuId}/items`, query),
   createItem: (
@@ -159,6 +206,8 @@ export const ownerApi = {
   ) => api.post<OwnerMenuItem>(`/menus/${menuId}/items`, input),
   updateItem: (menuId: string, itemId: string, input: Partial<OwnerMenuItem>) =>
     api.patch<OwnerMenuItem>(`/menus/${menuId}/items/${itemId}`, input),
+  deleteItem: (menuId: string, itemId: string) =>
+    api.delete<{ id?: string }>(`/menus/${menuId}/items/${itemId}`),
   updateAllergens: (
     menuId: string,
     itemId: string,
@@ -169,6 +218,10 @@ export const ownerApi = {
     api.get<Order[]>('/orders', query),
   updateOrderStatus: (orderId: string, status: string) =>
     api.patch<Order>(`/orders/${orderId}/status`, { status }),
+  getTableQr: (restaurantId: string, tableNumber: number) =>
+    api.get<{ tableNumber: number; qrCode: string }>(
+      `/restaurants/${restaurantId}/tables/${tableNumber}/qr`,
+    ),
   revokeTableQr: (restaurantId: string, tableNumber: number) =>
     api.post<{ tableNumber: number; qrCode: string }>(
       `/restaurants/${restaurantId}/tables/${tableNumber}/qr/revoke`,
@@ -196,4 +249,6 @@ export const tabletApi = {
   }) => api.post<Order>('/orders', body, false),
   getSessionOrders: (sessionId: string) =>
     api.get<Order[]>(`/orders/session/${sessionId}`, undefined, false),
+  cashPayment: (sessionId: string) =>
+    api.post<Order[]>(`/orders/session/${sessionId}/cash-payment`, undefined, false),
 };

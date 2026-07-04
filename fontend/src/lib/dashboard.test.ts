@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { getOwnerSummary, groupOrdersByTable } from './dashboard';
+import {
+  getCheckoutTransitionPath,
+  getDishRevenueBreakdown,
+  getOwnerSummary,
+  getTableHistory,
+  groupOrdersByTable,
+} from './dashboard';
 import type { Order, OwnerMenuItem, Restaurant } from './types';
 
 const restaurant: Restaurant = {
@@ -87,5 +93,38 @@ describe('dashboard helpers', () => {
       { tableNumber: 1, orderIds: ['order-1', 'order-2'], openTotal: 130000 },
       { tableNumber: 3, orderIds: ['order-3'], openTotal: 30000 },
     ]);
+  });
+
+  it('builds a completed table history from paid orders', () => {
+    expect(getTableHistory(orders)).toEqual([
+      {
+        tableNumber: 1,
+        orderCount: 1,
+        revenue: 45000,
+        latestClosedAt: '2026-06-28T08:05:00.000Z',
+      },
+    ]);
+  });
+
+  it('aggregates completed dish revenue for charts', () => {
+    expect(getDishRevenueBreakdown(orders)).toEqual([
+      {
+        name: 'Nem',
+        quantity: 1,
+        revenue: 45000,
+      },
+    ]);
+  });
+
+  it('returns the backend-safe transition path when checking out a table', () => {
+    expect(getCheckoutTransitionPath('pending')).toEqual([
+      'confirmed',
+      'preparing',
+      'ready',
+      'served',
+      'completed',
+    ]);
+    expect(getCheckoutTransitionPath('served')).toEqual(['completed']);
+    expect(getCheckoutTransitionPath('completed')).toEqual([]);
   });
 });

@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  BarChart3,
   Check,
+  ChevronDown,
   ChefHat,
   ClipboardList,
   ExternalLink,
+  History,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -17,11 +20,20 @@ import {
   ShieldAlert,
   ShoppingCart,
   TabletSmartphone,
+  Trash2,
+  Upload,
   Utensils,
 } from 'lucide-react';
 import { ACCESS_TOKEN_KEY, ApiError, authApi, ownerApi, tabletApi } from './lib/api';
 import { addItemToCart, getCartTotal, toOrderPayload, updateCartQuantity } from './lib/cart';
-import { getOwnerSummary, groupOrdersByTable } from './lib/dashboard';
+import {
+  getCheckoutTransitionPath,
+  getDishRevenueBreakdown,
+  getOwnerSummary,
+  getTableHistory,
+  groupOrdersByTable,
+  isClosedOrderStatus,
+} from './lib/dashboard';
 import {
   ALLERGEN_OPTIONS,
   CATEGORIES,
@@ -29,7 +41,16 @@ import {
   ORDER_STATUS_LABEL,
 } from './lib/constants';
 import { formatDateTime, formatVnd } from './lib/format';
-import { getTabletScanUrl, parseQrPayload } from './lib/qr';
+import { shouldHideForAllergens } from './lib/menu';
+import { getTabletTableUrl, parseQrPayload } from './lib/qr';
+import {
+  getLocalizedAllergenLabel,
+  getLocalizedCategory,
+  getLocalizedOrderStatus,
+  getLocalizedRiskLabel,
+  getTabletCopy,
+  TABLET_LANGUAGES,
+} from './lib/tabletI18n';
 import type {
   AllergenTag,
   AllergenType,
@@ -48,6 +69,14 @@ import type {
 
 const SESSION_KEY = 'smart-menu-tablet-session';
 const CART_KEY = 'smart-menu-tablet-cart';
+const FALLBACK_DISH_IMAGES: Record<string, string> = {
+  'Khai vị': 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=900&q=80',
+  'Món chính': 'https://images.unsplash.com/photo-1582878826629-29b7ad1cdc43?auto=format&fit=crop&w=900&q=80',
+  'Tráng miệng': 'https://images.unsplash.com/photo-1563805042-7684c019e1cb?auto=format&fit=crop&w=900&q=80',
+  'Đồ uống': 'https://images.unsplash.com/photo-1544787219-7f47ccb76574?auto=format&fit=crop&w=900&q=80',
+  Khác: 'https://images.unsplash.com/photo-1543353071-10c8ba85a904?auto=format&fit=crop&w=900&q=80',
+};
+type OwnerSection = 'overview' | 'menu' | 'tables' | 'orders' | 'revenue';
 
 export default function App() {
   const mode = getAppMode();
@@ -63,6 +92,23 @@ function getAppMode() {
   return window.location.port === '5173' ? 'owner' : 'tablet';
 }
 
+function getDishImageUrl(item: PublicMenuItem) {
+  return item.imageUrl || FALLBACK_DISH_IMAGES[item.category] || FALLBACK_DISH_IMAGES.Khác;
+}
+
+function getCategoryOrder(category: string) {
+  const index = CATEGORIES.findIndex((candidate) => candidate === category);
+  return index === -1 ? CATEGORIES.length : index;
+}
+
+function sortMenuCategoryEntries<T>(entries: Array<readonly [string, T]>) {
+  return [...entries].sort(([categoryA], [categoryB]) => {
+    const orderDifference = getCategoryOrder(categoryA) - getCategoryOrder(categoryB);
+    if (orderDifference !== 0) return orderDifference;
+    return categoryA.localeCompare(categoryB, 'vi');
+  });
+}
+
 function OwnerDashboard() {
   const [owner, setOwner] = useState<Owner | null>(null);
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
@@ -71,6 +117,7 @@ function OwnerDashboard() {
   const [items, setItems] = useState<OwnerMenuItem[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [statusFilter, setStatusFilter] = useState('');
+  const [activeSection, setActiveSection] = useState<OwnerSection>('overview');
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -202,11 +249,16 @@ function OwnerDashboard() {
       {loading ? (
         <LoadingState label="Đang tải dashboard" />
       ) : (
-        <div className="owner-workspace">
-          <OwnerSummaryCards summary={summary} />
+        <div className="owner-workspace owner-tablet-workspace" data-testid="owner-tablet-workspace">
+          <div className="owner-left-category-rail" data-testid="owner-left-category-rail">
+            <OwnerSectionNav activeSection={activeSection} onSelect={setActiveSection} />
+          </div>
+          <div className="owner-content-workspace" data-testid="owner-content-workspace">
+            <OwnerCommandHero restaurant={restaurant} summary={summary} />
+            <OwnerSummaryCards summary={summary} />
 
-          <div className="owner-grid">
-          <section className="panel span-2">
+            <div className="owner-grid">
+          <section className="panel span-2" hidden={activeSection !== 'overview'}>
             {restaurant ? (
               <RestaurantSummary restaurant={restaurant} onUpdated={(next) => setRestaurant(next)} />
             ) : (
@@ -219,7 +271,11 @@ function OwnerDashboard() {
             )}
           </section>
 
-          <section className="panel">
+          <section
+            className="panel owner-menu-panel"
+            data-testid="owner-menu-panel"
+            hidden={activeSection !== 'menu'}
+          >
             <MenuManager
               menus={menus}
               selectedMenuId={selectedMenuId}
@@ -240,7 +296,7 @@ function OwnerDashboard() {
             />
           </section>
 
-          <section className="panel">
+          <section className="panel" hidden={activeSection !== 'tables'}>
             <TableAccessBoard
               restaurant={restaurant}
               onMessage={setMessage}
@@ -249,11 +305,12 @@ function OwnerDashboard() {
             />
           </section>
 
-          <section className="panel span-2">
+          <section className="panel span-2" hidden={activeSection !== 'orders'}>
             <OrdersBoard
               orders={orders}
               statusFilter={statusFilter}
               onStatusFilter={setStatusFilter}
+              onMessage={setMessage}
               onUpdated={async () => {
                 const response = await ownerApi.getOrders({
                   status: statusFilter || undefined,
@@ -264,6 +321,11 @@ function OwnerDashboard() {
               onError={setError}
             />
           </section>
+
+          <section className="panel span-2" hidden={activeSection !== 'revenue'}>
+            <RevenueBoard orders={orders} />
+          </section>
+            </div>
           </div>
         </div>
       )}
@@ -281,20 +343,16 @@ function OwnerShell({
   onLogout: () => void;
 }) {
   return (
-    <div className="app owner-app">
+    <div className="app owner-app design-shell">
       <header className="topbar">
         <div className="brand">
           <LayoutDashboard aria-hidden="true" />
           <div>
             <strong>SmartMenu vận hành</strong>
-            <span>Owner host · localhost:5173</span>
+            <span>Bảng điều khiển nhà hàng</span>
           </div>
         </div>
         <div className="topbar-actions">
-          <a className="icon-link" href={import.meta.env.VITE_TABLET_ORIGIN ?? 'http://localhost:5174'}>
-            <TabletSmartphone size={18} />
-            Mở tablet
-          </a>
           {owner ? <span className="muted">{owner.email}</span> : null}
           {localStorage.getItem(ACCESS_TOKEN_KEY) ? (
             <button className="icon-button" onClick={onLogout} title="Đăng xuất" aria-label="Đăng xuất">
@@ -308,9 +366,73 @@ function OwnerShell({
   );
 }
 
+function OwnerSectionNav({
+  activeSection,
+  onSelect,
+}: {
+  activeSection: OwnerSection;
+  onSelect: (section: OwnerSection) => void;
+}) {
+  const sections: Array<{ id: OwnerSection; label: string; icon: React.ReactNode }> = [
+    { id: 'overview', label: 'Tổng quan', icon: <LayoutDashboard size={17} /> },
+    { id: 'menu', label: 'Menu và món', icon: <Utensils size={17} /> },
+    { id: 'tables', label: 'Tablet bàn', icon: <TabletSmartphone size={17} /> },
+    { id: 'orders', label: 'Đơn theo bàn', icon: <ClipboardList size={17} /> },
+    { id: 'revenue', label: 'Doanh thu', icon: <BarChart3 size={17} /> },
+  ];
+
+  return (
+    <nav className="owner-section-nav" aria-label="Mục quản lý">
+      {sections.map((section) => (
+        <button
+          key={section.id}
+          className={activeSection === section.id ? 'active' : ''}
+          onClick={() => onSelect(section.id)}
+          type="button"
+        >
+          {section.icon}
+          {section.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+
+function OwnerCommandHero({
+  restaurant,
+  summary,
+}: {
+  restaurant: Restaurant | null;
+  summary: ReturnType<typeof getOwnerSummary>;
+}) {
+  return (
+    <section className="owner-command-hero">
+      <div className="hero-copy-block">
+        <span className="eyebrow">SmartMenu Owner Console</span>
+        <h1>{restaurant?.name ?? 'Vận hành nhà hàng chuẩn hiện đại'}</h1>
+        <p>
+          Theo dõi bàn, menu, đơn hàng và thanh toán trên một màn hình. Giao diện mới ưu tiên tốc độ thao tác,
+          cảnh báo dị ứng và trải nghiệm tablet tại bàn.
+        </p>
+      </div>
+      <div className="hero-live-card">
+        <span>Đang phục vụ</span>
+        <strong>{summary.openOrders}</strong>
+        <small>đơn mở · {summary.pendingOrders} đơn chờ xác nhận</small>
+      </div>
+      <div className="hero-live-card accent">
+        <span>Doanh thu mở</span>
+        <strong>{formatVnd(summary.openRevenue)}</strong>
+        <small>{summary.activeTables} bàn đang hoạt động</small>
+      </div>
+    </section>
+  );
+}
+
 function OwnerSummaryCards({ summary }: { summary: ReturnType<typeof getOwnerSummary> }) {
   const cards = [
-    { label: 'Bàn đang dùng được', value: summary.activeTables, detail: 'tablet/table active' },
+    { label: 'Bàn đang dùng được', value: summary.activeTables, detail: 'bàn có thiết bị hoạt động' },
     { label: 'Đơn đang mở', value: summary.openOrders, detail: `${summary.pendingOrders} đơn chờ xác nhận` },
     { label: 'Cảnh báo dị ứng', value: summary.allergyOrders, detail: 'đơn cần bếp chú ý' },
     { label: 'Doanh thu đơn mở', value: formatVnd(summary.openRevenue), detail: 'chưa gồm đơn đã đóng' },
@@ -360,8 +482,8 @@ function AuthPanel({ onAuthed }: { onAuthed: (result: { accessToken: string; own
         <ChefHat size={42} />
         <h1>Quản lý menu, bàn và đơn gọi món</h1>
         <p>
-          Màn này dành cho chủ quán tại localhost:5173. Tablet cho khách dùng riêng tại
-          localhost:5174 và chỉ mở đúng menu của nhà hàng/bàn đã chọn.
+          Quản lý menu, bàn và đơn gọi món trong một màn hình gọn hơn. Tablet của khách chỉ mở
+          đúng menu của nhà hàng và bàn đã chọn.
         </p>
       </div>
       <form className="panel auth-panel" onSubmit={submit}>
@@ -436,7 +558,7 @@ function RestaurantCreateForm({ onCreated }: { onCreated: (restaurant: Restauran
     <form className="form-grid" onSubmit={submit}>
       <div>
         <h2>Tạo hồ sơ nhà hàng</h2>
-        <p className="muted">Nhà hàng và số bàn là dữ liệu gốc để tạo link tablet tại từng bàn.</p>
+        <p className="muted">Nhà hàng và số bàn là dữ liệu gốc để tạo liên kết gọi món tại từng bàn.</p>
       </div>
       <label>
         Tên nhà hàng
@@ -537,20 +659,19 @@ function MenuManager({
   onMessage: (message: string) => void;
   onError: (message: string) => void;
 }) {
-  const [imagePath, setImagePath] = useState('');
   const [savingAllergenItemId, setSavingAllergenItemId] = useState('');
   const [form, setForm] = useState({
     nameVi: '',
     descVi: '',
     price: 50000,
     category: 'Món chính' as MenuItemCategory,
+    imageUrl: '',
   });
   const selectedMenu = menus.find((menu) => menu.id === selectedMenuId);
 
   async function uploadMenu() {
     try {
-      await ownerApi.uploadMenu(imagePath || undefined);
-      setImagePath('');
+      await ownerApi.uploadMenu();
       await onMenusChanged();
       onMessage('Đã tạo bản menu draft');
     } catch (err) {
@@ -607,7 +728,7 @@ function MenuManager({
     if (!selectedMenuId) return;
     try {
       await ownerApi.createItem(selectedMenuId, form);
-      setForm({ nameVi: '', descVi: '', price: 50000, category: 'Món chính' });
+      setForm({ nameVi: '', descVi: '', price: 50000, category: 'Món chính', imageUrl: '' });
       await onItemsChanged();
       onMessage('Đã thêm món');
     } catch (err) {
@@ -625,6 +746,58 @@ function MenuManager({
     }
   }
 
+  async function updateItemImage(item: OwnerMenuItem, file: File | null) {
+    if (!selectedMenuId || !file) return;
+    try {
+      const imageUrl = await readImageFile(file);
+      await ownerApi.updateItem(selectedMenuId, item.id, { imageUrl });
+      await onItemsChanged();
+      onMessage('Đã cập nhật ảnh món ăn');
+    } catch (err) {
+      onError(readError(err));
+    }
+  }
+
+  async function setFormImage(file: File | null) {
+    if (!file) return;
+    try {
+      setForm({ ...form, imageUrl: await readImageFile(file) });
+    } catch (err) {
+      onError(readError(err));
+    }
+  }
+
+  async function deleteSelectedMenu() {
+    if (!selectedMenu) return;
+    const confirmed = window.confirm(
+      selectedMenu.status === 'published'
+        ? `Menu v${selectedMenu.version} đang publish. Xóa sẽ chuyển menu sang lưu trữ. Tiếp tục?`
+        : `Xóa menu v${selectedMenu.version} và toàn bộ món trong menu này?`,
+    );
+    if (!confirmed) return;
+
+    try {
+      await ownerApi.deleteMenu(selectedMenu.id);
+      await onMenusChanged();
+      onMessage(selectedMenu.status === 'published' ? 'Đã lưu trữ menu đang publish' : 'Đã xóa menu');
+    } catch (err) {
+      onError(readError(err));
+    }
+  }
+
+  async function deleteItem(item: OwnerMenuItem) {
+    if (!selectedMenuId) return;
+    if (!window.confirm(`Xóa món "${item.nameVi}" khỏi menu?`)) return;
+
+    try {
+      await ownerApi.deleteItem(selectedMenuId, item.id);
+      await onItemsChanged();
+      onMessage('Đã xóa món');
+    } catch (err) {
+      onError(readError(err));
+    }
+  }
+
   return (
     <div className="stack">
       <div className="section-heading">
@@ -634,13 +807,14 @@ function MenuManager({
         </div>
         <button className="secondary-button" onClick={uploadMenu}>
           <Plus size={16} />
-          Menu draft
+          Tạo menu
         </button>
       </div>
       <input
+        hidden
         placeholder="imagePath tùy chọn cho /menus/upload"
-        value={imagePath}
-        onChange={(event) => setImagePath(event.target.value)}
+        value=""
+        readOnly
       />
       <div className="menu-tabs">
         {menus.length === 0 ? <span className="muted">Chưa có menu</span> : null}
@@ -655,14 +829,20 @@ function MenuManager({
         ))}
       </div>
       {selectedMenu ? (
-        <button
-          className="primary-button"
-          onClick={publishMenu}
-          disabled={selectedMenu.status !== 'draft'}
-        >
-          <Check size={18} />
-          Publish menu v{selectedMenu.version}
-        </button>
+        <div className="menu-actions">
+          <button
+            className="primary-button"
+            onClick={publishMenu}
+            disabled={selectedMenu.status !== 'draft'}
+          >
+            <Check size={18} />
+            Publish menu v{selectedMenu.version}
+          </button>
+          <button className="danger-button" onClick={deleteSelectedMenu}>
+            <Trash2 size={18} />
+            Xóa menu
+          </button>
+        </div>
       ) : null}
       <form className="item-form" onSubmit={createItem}>
         <input
@@ -691,6 +871,15 @@ function MenuManager({
             <option key={category}>{category}</option>
           ))}
         </select>
+        <label className="file-upload compact">
+          <Upload size={16} />
+          Ảnh
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(event) => setFormImage(event.target.files?.[0] ?? null)}
+          />
+        </label>
         <button className="secondary-button" disabled={!selectedMenuId}>
           <Plus size={16} />
           Thêm món
@@ -700,6 +889,7 @@ function MenuManager({
         {items.map((item) => (
           <article className="owner-item" key={item.id}>
             <div className="owner-item-main">
+              {item.imageUrl ? <img className="owner-item-image" src={item.imageUrl} alt={item.nameVi} /> : null}
               <div>
                 <strong>{item.nameVi}</strong>
                 <span>{item.category} · {formatVnd(item.price)}</span>
@@ -724,6 +914,19 @@ function MenuManager({
               >
                 {savingAllergenItemId === item.id ? <Loader2 className="spin" size={16} /> : <ShieldAlert size={16} />}
                 Xác nhận
+              </button>
+              <label className="file-upload compact">
+                <Upload size={16} />
+                Ảnh món
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => updateItemImage(item, event.target.files?.[0] ?? null)}
+                />
+              </label>
+              <button className="danger-button compact" onClick={() => deleteItem(item)}>
+                <Trash2 size={16} />
+                Xóa món
               </button>
             </div>
             <div className="owner-allergen-grid">
@@ -764,7 +967,7 @@ function TableAccessBoard({
     return (
       <div className="empty-state">
         <TabletSmartphone size={30} />
-        <p>Tạo nhà hàng để có link tablet cho từng bàn.</p>
+        <p>Tạo nhà hàng để có liên kết gọi món cho từng bàn.</p>
       </div>
     );
   }
@@ -780,7 +983,7 @@ function TableAccessBoard({
             : table,
         ),
       });
-      onMessage(`Đã làm mới link tablet bàn ${tableNumber}`);
+      onMessage(`Đã làm mới liên kết bàn ${tableNumber}`);
     } catch (err) {
       onError(readError(err));
     }
@@ -791,23 +994,23 @@ function TableAccessBoard({
       <div className="section-heading">
         <div>
           <h2>Tablet theo bàn</h2>
-          <p className="muted">Mỗi link mở trên localhost:5174 và tự tạo session đúng bàn.</p>
+          <p className="muted">Mỗi bàn dùng một liên kết riêng để khách mở đúng menu gọi món.</p>
         </div>
       </div>
       <div className="table-list">
         {restaurant.tables.map((table) => {
-          const url = getTabletScanUrl(table.qrCode);
+          const url = getTabletTableUrl({
+            qrCode: table.qrCode,
+            restaurantId: restaurant.id,
+          });
           return (
             <article className="table-row" key={table.tableNumber}>
               <div>
                 <strong>Bàn {table.tableNumber}</strong>
                 <span className={table.isActive ? 'table-state active' : 'table-state'}>{table.isActive ? 'Đang dùng' : 'Tạm tắt'}</span>
               </div>
-              <a href={url} target="_blank" rel="noreferrer">
-                <ExternalLink size={16} />
-                Mở tablet
-              </a>
-              <button className="icon-button" onClick={() => revoke(table.tableNumber)} title="Làm mới link tablet" aria-label={`Làm mới link bàn ${table.tableNumber}`}>
+              <TableLaunchLink href={url} tableNumber={table.tableNumber} />
+              <button className="icon-button" onClick={() => revoke(table.tableNumber)} title="Làm mới liên kết bàn" aria-label={`Làm mới liên kết bàn ${table.tableNumber}`}>
                 <RefreshCcw size={16} />
               </button>
             </article>
@@ -818,20 +1021,38 @@ function TableAccessBoard({
   );
 }
 
+function TableLaunchLink({ href, tableNumber }: { href: string; tableNumber: number }) {
+  return (
+    <a
+      className="icon-link table-launch-link"
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={`Mở bàn ${tableNumber}`}
+    >
+      <ExternalLink size={16} />
+      Mở bàn
+    </a>
+  );
+}
+
 function OrdersBoard({
   orders,
   statusFilter,
   onStatusFilter,
+  onMessage,
   onUpdated,
   onError,
 }: {
   orders: Order[];
   statusFilter: string;
   onStatusFilter: (status: string) => void;
+  onMessage: (message: string) => void;
   onUpdated: () => Promise<void>;
   onError: (message: string) => void;
 }) {
   const tableGroups = useMemo(() => groupOrdersByTable(orders), [orders]);
+  const [checkingOutTable, setCheckingOutTable] = useState<number | null>(null);
 
   async function setStatus(order: Order, status: OrderStatus) {
     try {
@@ -839,6 +1060,26 @@ function OrdersBoard({
       await onUpdated();
     } catch (err) {
       onError(readError(err));
+    }
+  }
+
+  async function checkoutTable(tableNumber: number, tableOrders: Order[]) {
+    const openOrders = tableOrders.filter((order) => !isClosedOrderStatus(order.status));
+    if (openOrders.length === 0) return;
+
+    setCheckingOutTable(tableNumber);
+    try {
+      for (const order of openOrders) {
+        for (const status of getCheckoutTransitionPath(order.status)) {
+          await ownerApi.updateOrderStatus(order.id, status);
+        }
+      }
+      await onUpdated();
+      onMessage(`Đã thanh toán và đóng bàn ${tableNumber}`);
+    } catch (err) {
+      onError(readError(err));
+    } finally {
+      setCheckingOutTable(null);
     }
   }
 
@@ -870,12 +1111,22 @@ function OrdersBoard({
                 <strong>Bàn {group.tableNumber}</strong>
                 <span>{group.orders.length} đơn · đang mở {formatVnd(group.openTotal)}</span>
               </div>
-              {group.orders.some((order) => order.allergyNotes) ? (
-                <span className="warning-badge">
-                  <AlertTriangle size={15} />
-                  Dị ứng
-                </span>
-              ) : null}
+              <div className="table-order-tools">
+                {group.orders.some((order) => order.allergyNotes) ? (
+                  <span className="warning-badge">
+                    <AlertTriangle size={15} />
+                    Dị ứng
+                  </span>
+                ) : null}
+                <button
+                  className="primary-button compact"
+                  disabled={group.openTotal === 0 || checkingOutTable === group.tableNumber}
+                  onClick={() => checkoutTable(group.tableNumber, group.orders)}
+                >
+                  {checkingOutTable === group.tableNumber ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
+                  Thanh toán & đóng bàn
+                </button>
+              </div>
             </div>
             <div className="orders-grid">
               {group.orders.map((order) => (
@@ -911,16 +1162,112 @@ function OrdersBoard({
   );
 }
 
+function RevenueBoard({ orders }: { orders: Order[] }) {
+  const dishRevenue = useMemo(() => getDishRevenueBreakdown(orders), [orders]);
+  const tableHistory = useMemo(() => getTableHistory(orders), [orders]);
+  const [selectedTableNumber, setSelectedTableNumber] = useState<number | null>(null);
+  const maxDishRevenue = Math.max(...dishRevenue.map((item) => item.revenue), 1);
+  const selectedTableOrders = useMemo(
+    () =>
+      selectedTableNumber === null
+        ? []
+        : orders.filter(
+            (order) => order.tableNumber === selectedTableNumber && order.status === 'completed',
+          ),
+    [orders, selectedTableNumber],
+  );
+
+  return (
+    <div className="stack">
+      <div className="section-heading">
+        <div>
+          <h2>Biểu đồ doanh thu</h2>
+          <p className="muted">Doanh thu chỉ tính các đơn đã thanh toán và đóng bàn.</p>
+        </div>
+        <BarChart3 size={24} />
+      </div>
+      <div className="revenue-layout">
+        <section className="revenue-panel">
+          <div className="mini-heading">
+            <BarChart3 size={18} />
+            <strong>Món ăn</strong>
+          </div>
+          {dishRevenue.length === 0 ? <p className="muted">Chưa có doanh thu món.</p> : null}
+          <div className="dish-revenue-list">
+            {dishRevenue.map((item) => (
+              <article className="dish-revenue-row" key={item.name}>
+                <div>
+                  <strong>{item.name}</strong>
+                  <span>{item.quantity} phần · {formatVnd(item.revenue)}</span>
+                </div>
+                <div className="bar-track" aria-hidden="true">
+                  <span style={{ width: `${Math.max(8, (item.revenue / maxDishRevenue) * 100)}%` }} />
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+        <section className="revenue-panel">
+          <div className="mini-heading">
+            <History size={18} />
+            <strong>Lịch sử bàn</strong>
+          </div>
+          {tableHistory.length === 0 ? <p className="muted">Chưa có bàn đã đóng.</p> : null}
+          <div className="table-history-list">
+            {tableHistory.map((entry) => (
+              <article className="table-history-row" key={`${entry.tableNumber}-${entry.latestClosedAt}`}>
+                <div>
+                  <strong>Bàn {entry.tableNumber}</strong>
+                  <span>{entry.orderCount} đơn · {formatDateTime(entry.latestClosedAt)}</span>
+                </div>
+                <span>{formatVnd(entry.revenue)}</span>
+                <button className="secondary-button compact" onClick={() => setSelectedTableNumber(entry.tableNumber)}>
+                  Chi tiết
+                </button>
+              </article>
+            ))}
+          </div>
+          {selectedTableNumber !== null ? (
+            <div className="revenue-detail">
+              <div className="mini-heading">
+                <ClipboardList size={18} />
+                <strong>Chi tiết bàn {selectedTableNumber}</strong>
+              </div>
+              {selectedTableOrders.map((order) => (
+                <article className="revenue-detail-order" key={order.id}>
+                  <div className="mini-order">
+                    <strong>{formatDateTime(order.createdAt)}</strong>
+                    <span>{formatVnd(order.totalPrice)}</span>
+                  </div>
+                  <ul>
+                    {order.items.map((item, index) => (
+                      <li key={`${order.id}-${index}`}>
+                        {item.quantity}x {item.nameVi} - {formatVnd(item.price * item.quantity)}
+                      </li>
+                    ))}
+                  </ul>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function TabletApp() {
   const [session, setSession] = useState<Session | null>(() => readStored<Session>(SESSION_KEY));
   const [menu, setMenu] = useState<PublicMenu | null>(null);
   const [cart, setCart] = useState<CartItem[]>(() => readStored<CartItem[]>(CART_KEY) ?? []);
   const [orders, setOrders] = useState<Order[]>([]);
   const [allergens, setAllergens] = useState<AllergenType[]>([]);
+  const [language, setLanguage] = useState('vi');
   const [customerNotes, setCustomerNotes] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const copy = useMemo(() => getTabletCopy(language), [language]);
 
   useEffect(() => {
     localStorage.setItem(CART_KEY, JSON.stringify(cart));
@@ -928,9 +1275,24 @@ function TabletApp() {
 
   useEffect(() => {
     const data = new URL(window.location.href).searchParams.get('data');
-    if (!data || session) return;
+    if (!data) return;
 
-    startSession(`${window.location.origin}/scan?data=${data}`);
+    const scanUrl = `${window.location.origin}/scan?data=${data}`;
+    try {
+      const payload = parseQrPayload(scanUrl);
+      if (
+        session?.restaurantId === payload.restaurantId &&
+        session.tableNumber === payload.tableNumber
+      ) {
+        return;
+      }
+      localStorage.removeItem(SESSION_KEY);
+      localStorage.removeItem(CART_KEY);
+      setCart([]);
+      startSession(scanUrl);
+    } catch (err) {
+      setError(readError(err));
+    }
   }, [session]);
 
   useEffect(() => {
@@ -942,7 +1304,7 @@ function TabletApp() {
       setLoading(true);
       try {
         const [menuResponse, orderResponse] = await Promise.all([
-          tabletApi.getPublicMenu(activeSession.restaurantId, activeSession.sessionId),
+          tabletApi.getPublicMenu(activeSession.restaurantId, activeSession.sessionId, language),
           tabletApi.getSessionOrders(activeSession.sessionId),
         ]);
         if (!ignore) {
@@ -963,7 +1325,7 @@ function TabletApp() {
       ignore = true;
       window.clearInterval(timer);
     };
-  }, [session]);
+  }, [session, language]);
 
   async function startSession(qrInput: string) {
     setLoading(true);
@@ -973,7 +1335,6 @@ function TabletApp() {
       const response = await tabletApi.createSession(payload);
       localStorage.setItem(SESSION_KEY, JSON.stringify(response.data));
       setSession(response.data);
-      setMessage(`Đã mở phiên bàn ${response.data.tableNumber}`);
     } catch (err) {
       setError(readError(err));
     } finally {
@@ -986,7 +1347,7 @@ function TabletApp() {
     setAllergens(next);
     try {
       await tabletApi.updateAllergens(session.sessionId, next, []);
-      const response = await tabletApi.getPublicMenu(session.restaurantId, session.sessionId);
+      const response = await tabletApi.getPublicMenu(session.restaurantId, session.sessionId, language);
       setMenu(response.data);
     } catch (err) {
       setError(readError(err));
@@ -1010,6 +1371,27 @@ function TabletApp() {
     }
   }
 
+  async function payCash() {
+    if (!session) return;
+    if (cart.length > 0 && !window.confirm('Giỏ còn món chưa gửi. Thanh toán tiền mặt các đơn đã gửi?')) {
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    try {
+      const response = await tabletApi.cashPayment(session.sessionId);
+      setOrders(response.data);
+      setCart([]);
+      setCustomerNotes('');
+      setMessage('Đã thanh toán tiền mặt');
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function resetTablet() {
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(CART_KEY);
@@ -1022,51 +1404,51 @@ function TabletApp() {
 
   if (!session) {
     return (
-      <div className="app tablet-app">
+      <div className="app tablet-app design-shell">
         <TabletWelcome onStart={startSession} loading={loading} error={error} />
       </div>
     );
   }
 
   return (
-    <div className="app tablet-app">
+    <div className="app tablet-app design-shell">
       <header className="tablet-header">
         <div className="tablet-title">
-          <span className="eyebrow">Tablet tại bàn {session.tableNumber}</span>
+          <span className="eyebrow">{copy.table} {session.tableNumber}</span>
           <h1>{menu?.restaurant.name ?? 'SmartMenu'}</h1>
           {menu?.restaurant.address ? <p>{menu.restaurant.address}</p> : null}
         </div>
-        <button className="icon-button" onClick={resetTablet} title="Reset tablet" aria-label="Reset tablet">
+        <button className="icon-button" onClick={resetTablet} title={copy.resetTablet} aria-label={copy.resetTablet}>
           <RefreshCcw size={18} />
         </button>
+        <TabletHeaderControls
+          language={language}
+          onLanguageChange={setLanguage}
+          allergens={allergens}
+          onAllergensChange={saveAllergens}
+        />
       </header>
       <StatusBanner message={message} error={error} onClear={() => {
         setMessage('');
         setError('');
       }} />
-      {loading && !menu ? <LoadingState label="Đang tải menu" /> : null}
+      {loading && !menu ? <LoadingState label={copy.loadingMenu} /> : null}
       {menu ? (
-        <div className="tablet-layout">
-          <section className="menu-column">
-            <AllergenPicker selected={allergens} onChange={saveAllergens} />
-            <MenuList menu={menu} onAdd={(item) => setCart(addItemToCart(cart, item))} />
-            <p className="disclaimer">
-              <ShieldAlert size={18} />
-              {menu.disclaimer}
-            </p>
-          </section>
-          <aside className="cart-column">
-            <CartPanel
-              cart={cart}
-              customerNotes={customerNotes}
-              orders={orders}
-              loading={loading}
-              onNotesChange={setCustomerNotes}
-              onQuantityChange={(id, quantity) => setCart(updateCartQuantity(cart, id, quantity))}
-              onSubmit={submitOrder}
-            />
-          </aside>
-        </div>
+        <TabletKioskBoard
+          menu={menu}
+          session={session}
+          cart={cart}
+          customerNotes={customerNotes}
+          orders={orders}
+          loading={loading}
+          language={language}
+          selectedAllergens={allergens}
+          onAdd={(item) => setCart(addItemToCart(cart, item))}
+          onNotesChange={setCustomerNotes}
+          onQuantityChange={(id, quantity) => setCart(updateCartQuantity(cart, id, quantity))}
+          onSubmit={submitOrder}
+          onCashPayment={payCash}
+        />
       ) : null}
     </div>
   );
@@ -1089,18 +1471,20 @@ function TabletWelcome({
         <Utensils size={58} />
       </div>
       <section className="panel tablet-start">
-        <span className="eyebrow">localhost:5174</span>
+        <span className="eyebrow">SmartMenu tại bàn</span>
         <h1>Chọn món tại bàn</h1>
         <p>
-          Mở link bàn từ màn chủ quán. Nếu đang cài tablet thủ công, dán URL bàn vào ô bên dưới
-          để bắt đầu phiên gọi món.
+          Mở liên kết bàn từ màn chủ quán để khách xem menu, chọn món và gửi đơn cho bếp.
         </p>
-        <textarea
-          value={qrInput}
-          onChange={(event) => setQrInput(event.target.value)}
-          placeholder="Dán URL bàn dạng /scan?data=..."
-          rows={4}
-        />
+        <label>
+          Liên kết bàn
+          <textarea
+            value={qrInput}
+            onChange={(event) => setQrInput(event.target.value)}
+            placeholder="Dán liên kết bàn do chủ quán cấp"
+            rows={4}
+          />
+        </label>
         {error ? <p className="error-text">{error}</p> : null}
         <button className="primary-button large" onClick={() => onStart(qrInput)} disabled={loading || !qrInput}>
           {loading ? <Loader2 className="spin" size={20} /> : <QrCode size={20} />}
@@ -1111,48 +1495,277 @@ function TabletWelcome({
   );
 }
 
-function AllergenPicker({
-  selected,
-  onChange,
+function TabletHeaderControls({
+  language,
+  onLanguageChange,
+  allergens,
+  onAllergensChange,
 }: {
-  selected: AllergenType[];
-  onChange: (allergens: AllergenType[]) => void;
+  language: string;
+  onLanguageChange: (language: string) => void;
+  allergens: AllergenType[];
+  onAllergensChange: (allergens: AllergenType[]) => void;
 }) {
+  const [allergenOpen, setAllergenOpen] = useState(false);
+  const copy = getTabletCopy(language);
+  const selectedText = allergens.length === 0 ? copy.noneSelected : copy.selectedCount(allergens.length);
+
   function toggle(value: AllergenType) {
-    onChange(selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value]);
+    onAllergensChange(
+      allergens.includes(value)
+        ? allergens.filter((item) => item !== value)
+        : [...allergens, value],
+    );
   }
 
   return (
-    <section className="allergen-strip">
-      <div>
-        <h2>Dị ứng</h2>
-        <p className="muted">Chọn chất cần tránh. Món đỏ/vàng cần hỏi lại nhân viên trước khi đặt.</p>
+    <div className="tablet-header-controls">
+      <label className="language-control">
+        {copy.language}
+        <select value={language} onChange={(event) => onLanguageChange(event.target.value)}>
+          {TABLET_LANGUAGES.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+      </label>
+      <div className="allergen-dropdown">
+        <span>{copy.allergyFilter}</span>
+        <button
+          type="button"
+          className="select-like-button"
+          data-testid="tablet-allergen-trigger"
+          aria-expanded={allergenOpen}
+          onClick={() => setAllergenOpen((open) => !open)}
+        >
+          <span>{selectedText}</span>
+          <ChevronDown size={16} />
+        </button>
+        {allergenOpen ? (
+          <div className="allergen-menu" data-testid="tablet-allergen-menu" role="group" aria-label={copy.allergyFilter}>
+            {ALLERGEN_OPTIONS.map((option) => {
+              const selected = allergens.includes(option.value);
+
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  data-testid={`allergen-option-${option.value}`}
+                  className={selected ? 'allergen-option selected' : 'allergen-option'}
+                  aria-pressed={selected}
+                  onClick={() => toggle(option.value)}
+                >
+                  <span className="checkbox-mark">{selected ? <Check size={15} /> : null}</span>
+                  <span>{getLocalizedAllergenLabel(option.value, language)}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </div>
-      <div className="chip-list">
-        {ALLERGEN_OPTIONS.map((option) => (
-          <button
-            key={option.value}
-            className={selected.includes(option.value) ? 'chip selected' : 'chip'}
-            onClick={() => toggle(option.value)}
-          >
-            {option.label}
-          </button>
-        ))}
+    </div>
+  );
+}
+
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function TabletExperienceHero({
+  menu,
+  session,
+  copy,
+}: {
+  menu: PublicMenu;
+  session: Session;
+  copy: ReturnType<typeof getTabletCopy>;
+}) {
+  const dishCount = Object.values(menu.categories).reduce((total, items) => total + items.length, 0);
+
+  return (
+    <section className="tablet-experience-hero">
+      <div>
+        <span className="eyebrow">Bàn {session.tableNumber} · {dishCount} món đang phục vụ</span>
+        <h2>{copy.searchDishes}</h2>
+        <p>Chọn món, lọc dị ứng và gửi đơn trực tiếp cho bếp. Món mới thêm sẽ nằm trong giỏ bên phải.</p>
+      </div>
+      <div className="hotpot-orbit" aria-hidden="true">
+        <span />
+        <span />
+        <span />
       </div>
     </section>
   );
 }
 
+
+function TabletKioskBoard({
+  menu,
+  session,
+  cart,
+  customerNotes,
+  orders,
+  loading,
+  language,
+  selectedAllergens,
+  onAdd,
+  onNotesChange,
+  onQuantityChange,
+  onSubmit,
+  onCashPayment,
+}: {
+  menu: PublicMenu;
+  session: Session;
+  cart: CartItem[];
+  customerNotes: string;
+  orders: Order[];
+  loading: boolean;
+  language: string;
+  selectedAllergens: AllergenType[];
+  onAdd: (item: PublicMenuItem) => void;
+  onNotesChange: (notes: string) => void;
+  onQuantityChange: (id: string, quantity: number) => void;
+  onSubmit: () => void;
+  onCashPayment: () => void;
+}) {
+  const copy = getTabletCopy(language);
+  const categories = useMemo(
+    () => sortMenuCategoryEntries(
+      Object.entries(menu.categories)
+        .map(([category, items]) => [
+          category,
+          items.filter((item) => !shouldHideForAllergens(item, selectedAllergens)),
+        ] as const)
+        .filter(([, items]) => items.length > 0),
+    ),
+    [menu.categories, selectedAllergens],
+  );
+  const [activeCategory, setActiveCategory] = useState(categories[0]?.[0] ?? '');
+  const [query, setQuery] = useState('');
+  const dishCount = categories.reduce((sum, [, items]) => sum + items.length, 0);
+
+  useEffect(() => {
+    if (!activeCategory && categories[0]) setActiveCategory(categories[0][0]);
+    if (activeCategory && !categories.some(([category]) => category === activeCategory)) {
+      setActiveCategory(categories[0]?.[0] ?? '');
+    }
+  }, [activeCategory, categories]);
+
+  const activeItems = categories.find(([category]) => category === activeCategory)?.[1] ?? categories[0]?.[1] ?? [];
+  const normalizedQuery = query.trim().toLocaleLowerCase('vi-VN');
+  const visibleItems = activeItems.filter((item) => {
+    if (!normalizedQuery) return true;
+    return `${item.name} ${item.description ?? ''}`.toLocaleLowerCase('vi-VN').includes(normalizedQuery);
+  });
+
+  return (
+    <main className="tablet-menu-shell" aria-label="Giao diện gọi món tại bàn">
+      <div className="tablet-search-row">
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={copy.searchDishes}
+          aria-label={copy.searchDishes}
+        />
+      </div>
+
+      <div className="tablet-order-layout">
+        <aside className="tablet-category-sidebar" aria-label={copy.menuCategories}>
+          {categories.map(([category, items]) => (
+            <button
+              key={category}
+              type="button"
+              className={category === activeCategory ? 'active' : ''}
+              onClick={() => setActiveCategory(category)}
+            >
+              <span>{getLocalizedCategory(category, language)}</span>
+              <small>{items.length}</small>
+            </button>
+          ))}
+        </aside>
+
+        <section className="tablet-dish-section">
+          <div className="tablet-section-title-row">
+            <div>
+              <span className="eyebrow">Bàn {session.tableNumber} · {dishCount} món</span>
+              <h2>{getLocalizedCategory(activeCategory, language)}</h2>
+            </div>
+          </div>
+
+          {visibleItems.length === 0 ? (
+            <div className="empty-state tablet-empty-state">
+              <Utensils size={32} />
+              <p>{copy.noMatchingDishes}</p>
+            </div>
+          ) : null}
+
+          <div className="tablet-square-grid">
+            {visibleItems.map((item) => (
+              <article className="tablet-square-dish-card" key={item.id}>
+                <div className="tablet-square-image-wrap">
+                  <img src={getDishImageUrl(item)} alt={item.name} />
+                  <span className="tablet-check-mark"><Check size={18} /></span>
+                </div>
+                <div className="tablet-square-content">
+                  <strong>{item.name}</strong>
+                  <span>{item.description || item.name}</span>
+                  <div className="tablet-square-bottom">
+                    <small>{formatVnd(item.price)}</small>
+                    <button className="tablet-plus-button" onClick={() => onAdd(item)} title={copy.addToCart}>
+                      <Plus size={22} />
+                    </button>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <aside className="tablet-cart-sidebar-panel" aria-label={copy.cart}>
+          <CartPanel
+            cart={cart}
+            customerNotes={customerNotes}
+            orders={orders}
+            loading={loading}
+            onNotesChange={onNotesChange}
+            onQuantityChange={onQuantityChange}
+            onSubmit={onSubmit}
+            onCashPayment={onCashPayment}
+            language={language}
+          />
+        </aside>
+      </div>
+    </main>
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function MenuList({
   menu,
+  language,
+  selectedAllergens,
   onAdd,
 }: {
   menu: PublicMenu;
+  language: string;
+  selectedAllergens: AllergenType[];
   onAdd: (item: PublicMenuItem) => void;
 }) {
-  const categories = Object.entries(menu.categories);
+  const copy = getTabletCopy(language);
+  const categories = sortMenuCategoryEntries(
+    Object.entries(menu.categories)
+      .map(([category, items]) => [
+        category,
+        items.filter((item) => !shouldHideForAllergens(item, selectedAllergens)),
+      ] as const)
+      .filter(([, items]) => items.length > 0),
+  );
   const [activeCategory, setActiveCategory] = useState(categories[0]?.[0] ?? '');
   const [query, setQuery] = useState('');
+  useEffect(() => {
+    if (!activeCategory && categories[0]) setActiveCategory(categories[0][0]);
+    if (activeCategory && !categories.some(([category]) => category === activeCategory)) {
+      setActiveCategory(categories[0]?.[0] ?? '');
+    }
+  }, [activeCategory, categories]);
+
   const visibleCategories = categories
     .filter(([category]) => !activeCategory || category === activeCategory)
     .map(([category, items]) => [
@@ -1171,69 +1784,61 @@ function MenuList({
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Tìm món..."
-          aria-label="Tìm món"
+          placeholder={copy.searchDishes}
+          aria-label={copy.searchDishes}
         />
-        <div className="category-tabs" role="tablist" aria-label="Danh mục món">
+      </div>
+      <div className="menu-browser">
+        <div className="category-tabs category-rail" role="tablist" aria-label={copy.menuCategories}>
           {categories.map(([category]) => (
             <button
               key={category}
               className={category === activeCategory ? 'active' : ''}
               onClick={() => setActiveCategory(category)}
             >
-              {category}
+              {getLocalizedCategory(category, language)}
             </button>
           ))}
         </div>
-      </div>
-      {visibleCategories.length === 0 ? (
-        <div className="empty-state">
-          <Utensils size={28} />
-          <p>Không có món phù hợp.</p>
+        <div className="dish-pane">
+          {visibleCategories.length === 0 ? (
+            <div className="empty-state">
+              <Utensils size={28} />
+              <p>{copy.noMatchingDishes}</p>
+            </div>
+          ) : null}
+          {visibleCategories.map(([category, items]) => (
+            <section key={category}>
+              <h2>{getLocalizedCategory(category, language)}</h2>
+              <div className="dish-grid">
+                {items.map((item) => (
+                  <article className="dish-card" key={item.id}>
+                    <div className={`allergen-dot ${item.allergenLabel}`} title={getLocalizedRiskLabel(item.allergenLabel, language)}>
+                      {item.allergenLabel === 'red' ? <AlertTriangle size={16} /> : <Check size={16} />}
+                    </div>
+                    <img className="dish-image" src={getDishImageUrl(item)} alt={item.name} />
+                    <div className="dish-body">
+                      <h3>{item.name}</h3>
+                      {item.description ? <p>{item.description}</p> : null}
+                      <div className="dish-meta">
+                        <span>{formatVnd(item.price)}</span>
+                        {item.allergenLabel !== 'none' ? (
+                          <small className={`risk-text ${item.allergenLabel}`}>{getLocalizedRiskLabel(item.allergenLabel, language)}</small>
+                        ) : null}
+                      </div>
+                    </div>
+                    <button className="icon-button filled" onClick={() => onAdd(item)} title={copy.addToCart}>
+                      <Plus size={18} />
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ))}
         </div>
-      ) : null}
-      {visibleCategories.map(([category, items]) => (
-        <section key={category}>
-          <h2>{category}</h2>
-          <div className="dish-grid">
-            {items.map((item) => (
-              <article className="dish-card" key={item.id}>
-                <div className={`allergen-dot ${item.allergenLabel}`} title={getAllergenLabelText(item.allergenLabel)}>
-                  {item.allergenLabel === 'red' ? <AlertTriangle size={16} /> : <Check size={16} />}
-                </div>
-                <div>
-                  <h3>{item.name}</h3>
-                  {item.description ? <p>{item.description}</p> : null}
-                  <div className="dish-meta">
-                    <span>{formatVnd(item.price)}</span>
-                    {item.allergenLabel !== 'none' ? (
-                      <small className={`risk-text ${item.allergenLabel}`}>{getAllergenLabelText(item.allergenLabel)}</small>
-                    ) : null}
-                  </div>
-                </div>
-                <button className="icon-button filled" onClick={() => onAdd(item)} title="Thêm vào giỏ">
-                  <Plus size={18} />
-                </button>
-              </article>
-            ))}
-          </div>
-        </section>
-      ))}
+      </div>
     </div>
   );
-}
-
-function getAllergenLabelText(label: PublicMenuItem['allergenLabel']) {
-  switch (label) {
-    case 'red':
-      return 'Có chất dị ứng đã chọn';
-    case 'yellow':
-      return 'Cần hỏi lại nhân viên';
-    case 'green':
-      return 'Không trùng dị ứng đã chọn';
-    default:
-      return 'Chưa chọn dị ứng';
-  }
 }
 
 function CartPanel({
@@ -1241,37 +1846,43 @@ function CartPanel({
   customerNotes,
   orders,
   loading,
+  language,
   onNotesChange,
   onQuantityChange,
   onSubmit,
+  onCashPayment,
 }: {
   cart: CartItem[];
   customerNotes: string;
   orders: Order[];
   loading: boolean;
+  language: string;
   onNotesChange: (notes: string) => void;
   onQuantityChange: (id: string, quantity: number) => void;
   onSubmit: () => void;
+  onCashPayment: () => void;
 }) {
+  const copy = getTabletCopy(language);
   const total = useMemo(() => getCartTotal(cart), [cart]);
   const riskyItems = cart.filter((item) => item.allergenLabel === 'red' || item.allergenLabel === 'yellow');
+  const payableOrders = orders.filter((order) => !isClosedOrderStatus(order.status));
 
   return (
     <div className="cart-panel">
       <div className="section-heading">
         <div>
-          <h2>Giỏ món</h2>
-          <p className="muted">{cart.length} món · {formatVnd(total)}</p>
+          <h2>{copy.cart}</h2>
+          <p className="muted">{copy.itemsTotal(cart.length, formatVnd(total))}</p>
         </div>
         <ShoppingCart size={24} />
       </div>
       {riskyItems.length > 0 ? (
         <div className="cart-warning">
           <AlertTriangle size={18} />
-          <span>{riskyItems.length} món trong giỏ cần kiểm tra dị ứng với nhân viên.</span>
+          <span>{copy.allergyCartWarning(riskyItems.length)}</span>
         </div>
       ) : null}
-      {cart.length === 0 ? <p className="muted">Chọn món trong menu để bắt đầu.</p> : null}
+      {cart.length === 0 ? <p className="muted">{copy.cartEmpty}</p> : null}
       {cart.map((item) => (
         <article className="cart-item" key={item.menuItemId}>
           <div>
@@ -1290,25 +1901,33 @@ function CartPanel({
         </article>
       ))}
       <label>
-        Ghi chú cho quán
+        {copy.notesLabel}
         <textarea
           value={customerNotes}
           onChange={(event) => onNotesChange(event.target.value.slice(0, 200))}
           rows={3}
-          placeholder="Ví dụ: ít cay, không hành..."
+          placeholder={copy.notesPlaceholder}
         />
       </label>
       <button className="primary-button large" onClick={onSubmit} disabled={loading || cart.length === 0}>
         {loading ? <Loader2 className="spin" size={20} /> : <Send size={20} />}
-        Gửi đơn
+        {copy.sendOrder}
+      </button>
+      <button
+        className="cash-button large"
+        onClick={onCashPayment}
+        disabled={loading || payableOrders.length === 0}
+      >
+        <Check size={20} />
+        {copy.cashPayment}
       </button>
       <div className="session-orders">
-        <h3>Đơn đã gọi</h3>
-        {orders.length === 0 ? <p className="muted">Chưa có đơn.</p> : null}
+        <h3>{copy.sessionOrders}</h3>
+        {orders.length === 0 ? <p className="muted">{copy.noOrders}</p> : null}
         {orders.map((order) => (
           <article className="mini-order" key={order.id}>
             <div>
-              <strong>{ORDER_STATUS_LABEL[order.status]}</strong>
+              <strong>{getLocalizedOrderStatus(order.status, language)}</strong>
               <span>{formatDateTime(order.createdAt)}</span>
             </div>
             <span>{formatVnd(order.totalPrice)}</span>
@@ -1328,14 +1947,33 @@ function StatusBanner({
   error: string;
   onClear: () => void;
 }) {
-  if (!message && !error) return null;
+  const visibleError = shouldHideUiNotice(error) ? '' : error;
+  const visibleMessage = shouldHideUiNotice(message) ? '' : message;
+
+  if (!visibleMessage && !visibleError) return null;
 
   return (
-    <div className={error ? 'status-banner error' : 'status-banner'}>
-      <span>{error || message}</span>
+    <div className={visibleError ? 'status-banner error' : 'status-banner'}>
+      <span>{visibleError || visibleMessage}</span>
       <button onClick={onClear}>Đóng</button>
     </div>
   );
+}
+
+function shouldHideUiNotice(value: string) {
+  const normalized = value.trim().toLocaleLowerCase('vi-VN');
+  if (!normalized) return false;
+
+  return [
+    'token',
+    'session',
+    'hết phiên',
+    'hết hạn',
+    'phiên không hợp lệ',
+    'đã mở bàn',
+    '/scan?data',
+    'localhost',
+  ].some((term) => normalized.includes(term));
 }
 
 function LoadingState({ label }: { label: string }) {
@@ -1354,6 +1992,19 @@ function readStored<T>(key: string): T | null {
   } catch {
     return null;
   }
+}
+
+function readImageFile(file: File): Promise<string> {
+  if (!file.type.startsWith('image/')) {
+    return Promise.reject(new Error('Vui lòng chọn file ảnh món ăn'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('Không thể đọc file ảnh'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function readError(err: unknown): string {

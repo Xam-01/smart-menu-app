@@ -9,6 +9,7 @@ import { body, param } from 'express-validator';
 import uploadMenu from 'src/controller/v1/menu/upload_menu';
 import getMenus from 'src/controller/v1/menu/get_menus';
 import publishMenu from 'src/controller/v1/menu/publish_menu';
+import deleteMenu from 'src/controller/v1/menu/delete_menu';
 import createMenuItem from 'src/controller/v1/menu_item/create_menu_item';
 import getMenuItems from 'src/controller/v1/menu_item/get_menu_items';
 import updateMenuItem from 'src/controller/v1/menu_item/update_menu_item';
@@ -24,6 +25,13 @@ router.use(authenticate);
 router.post('/upload', uploadMenu);
 
 router.get('/', getMenus);
+
+router.delete(
+  '/:menuId',
+  [param('menuId').notEmpty()],
+  validationError,
+  deleteMenu,
+);
 
 router.post(
   '/:menuId/publish',

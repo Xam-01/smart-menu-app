@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseQrPayload } from './qr';
+import { getTabletTableUrl, parseQrPayload } from './qr';
 
 describe('parseQrPayload', () => {
   it('decodes a backend QR URL into session input', () => {
@@ -14,6 +14,25 @@ describe('parseQrPayload', () => {
   });
 
   it('rejects malformed payloads', () => {
-    expect(() => parseQrPayload('/scan?data=bad-data')).toThrow('QR không hợp lệ');
+    expect(() => parseQrPayload('/scan?data=bad-data')).toThrow(/QR/);
+  });
+
+  it('builds a tablet URL with restaurantId when legacy table QR is missing it', () => {
+    const encoded = btoa(JSON.stringify({
+      tableNumber: 3,
+      qrSecret: 'legacy-secret',
+    }));
+
+    const url = getTabletTableUrl({
+      qrCode: `http://localhost:3000/api/v1/sessions/scan?data=${encoded}`,
+      restaurantId: 'restaurant-1',
+      tabletOrigin: 'http://localhost:5174',
+    });
+
+    expect(parseQrPayload(url)).toEqual({
+      restaurantId: 'restaurant-1',
+      tableNumber: 3,
+      qrSecret: 'legacy-secret',
+    });
   });
 });

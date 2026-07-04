@@ -1,1 +1,1 @@
-# Xam-01-smart-menu-app
+# smart-menu-app
