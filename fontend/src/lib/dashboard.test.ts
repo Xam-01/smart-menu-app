@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildCategoryRevenueChartData,
+  buildOrderCountChartData,
+  buildPaymentMethodChartData,
+  buildPeakHourChartData,
+  buildRevenueChartData,
+  buildRevenueExportCsv,
+  buildRevenueTableRows,
+  enrichOrdersWithMenuCatalog,
+  buildTablePerformanceChartData,
+  buildTopDishesChartData,
+  filterPaidOrdersByDateRange,
   getCheckoutTransitionPath,
   getDishRevenueBreakdown,
   getOwnerSummary,
+  getStablePaymentToken,
   getTableHistory,
   groupOrdersByTable,
 } from './dashboard';
@@ -126,5 +138,153 @@ describe('dashboard helpers', () => {
     ]);
     expect(getCheckoutTransitionPath('served')).toEqual(['completed']);
     expect(getCheckoutTransitionPath('completed')).toEqual([]);
+  });
+
+  it('filters paid revenue orders by selected date range and ignores unpaid statuses', () => {
+    const revenueOrders = [
+      {
+        id: 'paid-1',
+        tableNumber: 1,
+        items: [{ nameVi: 'Lau thai', category: 'Lau', price: 189000, quantity: 1 }],
+        status: 'completed',
+        totalPrice: 189000,
+        createdAt: '2026-07-06T12:30:00.000Z',
+        updatedAt: '2026-07-06T13:00:00.000Z',
+      },
+      {
+        id: 'paid-2',
+        tableNumber: 2,
+        items: [{ nameVi: 'Bo My', category: 'Mon nhung', price: 89000, quantity: 2 }],
+        status: 'paid',
+        totalPrice: 178000,
+        createdAt: '2026-07-01T11:00:00.000Z',
+      },
+      {
+        id: 'pending-1',
+        tableNumber: 3,
+        items: [{ nameVi: 'Tra da', category: 'Do uong', price: 10000, quantity: 1 }],
+        status: 'pending',
+        totalPrice: 10000,
+        createdAt: '2026-07-06T10:00:00.000Z',
+      },
+      {
+        id: 'old-paid',
+        tableNumber: 4,
+        items: [{ nameVi: 'Kem', category: 'Trang mieng', price: 30000, quantity: 1 }],
+        status: 'completed',
+        totalPrice: 30000,
+        createdAt: '2026-06-01T10:00:00.000Z',
+      },
+    ] as Order[];
+
+    expect(
+      filterPaidOrdersByDateRange(revenueOrders, '7d', new Date('2026-07-07T00:00:00.000Z')).map(
+        (order) => order.id,
+      ),
+    ).toEqual(['paid-1', 'paid-2']);
+  });
+
+  it('builds revenue analytics datasets from paid orders only', () => {
+    const revenueOrders = [
+      {
+        id: 'bill-1',
+        tableNumber: 5,
+        items: [
+          { nameVi: 'Lau thai hai san', category: 'Lau', price: 189000, quantity: 1 },
+          { nameVi: 'Bo My', category: 'Mon nhung', price: 89000, quantity: 2 },
+        ],
+        status: 'completed',
+        totalPrice: 367000,
+        paymentMethod: 'MoMo',
+        paymentToken: 'PAY-202607-AB12',
+        paidAt: '2026-07-06T12:30:00.000Z',
+        createdAt: '2026-07-06T12:30:00.000Z',
+        updatedAt: '2026-07-06T13:00:00.000Z',
+      },
+      {
+        id: 'bill-2',
+        tableNumber: 5,
+        items: [{ nameVi: 'Nuoc suoi', category: 'Do uong', price: 10000, quantity: 2 }],
+        status: 'completed',
+        totalPrice: 20000,
+        paymentMethod: 'Tien mat',
+        createdAt: '2026-07-06T11:15:00.000Z',
+      },
+    ] as Order[];
+
+    expect(buildRevenueChartData(revenueOrders, '7d')).toEqual([
+      { label: '2026-07-06', value: 387000, detail: '2 đơn · TB 193.500 ₫' },
+    ]);
+    expect(buildOrderCountChartData(revenueOrders)).toEqual([
+      { label: '2026-07-06', value: 2, detail: '2 đơn đã thanh toán' },
+    ]);
+    expect(buildTopDishesChartData(revenueOrders)[0]).toMatchObject({
+      label: 'Bo My',
+      value: 2,
+      detail: '2 phần · 178.000 ₫',
+    });
+    expect(buildCategoryRevenueChartData(revenueOrders)).toEqual([
+      { label: 'Lau', value: 189000, detail: '189.000 ₫ · 49%' },
+      { label: 'Mon nhung', value: 178000, detail: '178.000 ₫ · 46%' },
+      { label: 'Do uong', value: 20000, detail: '20.000 ₫ · 5%' },
+    ]);
+    expect(buildPaymentMethodChartData(revenueOrders)).toEqual([
+      { label: 'MoMo', value: 367000, detail: '1 bill · 367.000 ₫ · 95%' },
+      { label: 'Tien mat', value: 20000, detail: '1 bill · 20.000 ₫ · 5%' },
+    ]);
+    expect(buildTablePerformanceChartData(revenueOrders)).toEqual([
+      { label: 'Bàn 5', value: 387000, detail: '2 bill · TB 193.500 ₫' },
+    ]);
+    expect(buildPeakHourChartData(revenueOrders)).toEqual([
+      { label: '11:00 - 12:00', value: 20000, detail: '1 đơn · 20.000 ₫' },
+      { label: '12:00 - 13:00', value: 367000, detail: '1 đơn · 367.000 ₫' },
+    ]);
+  });
+
+  it('builds revenue table rows with stable payment tokens and exportable current rows', () => {
+    const revenueOrders = [
+      {
+        id: 'bill-1',
+        tableNumber: 5,
+        items: [{ nameVi: 'Lau thai hai san', category: 'Lau', price: 189000, quantity: 1 }],
+        status: 'completed',
+        totalPrice: 189000,
+        paymentMethod: 'MoMo',
+        createdAt: '2026-07-06T12:30:00.000Z',
+      },
+    ] as Order[];
+    const rows = buildRevenueTableRows(revenueOrders);
+
+    expect(rows[0]).toMatchObject({
+      billId: 'bill-1',
+      paymentToken: getStablePaymentToken(revenueOrders[0]),
+      tableName: 'Bàn 5',
+      totalAmount: 189000,
+      paymentMethod: 'MoMo',
+      statusLabel: 'Đã thanh toán',
+    });
+    expect(buildRevenueExportCsv(rows)).toContain('Mã bill,Mã thanh toán,Bàn,Thời gian,Tổng tiền,Phương thức,Trạng thái');
+    expect(buildRevenueExportCsv(rows)).toContain('bill-1');
+  });
+
+  it('fills bill item names and categories from the menu catalog when order snapshots are incomplete', () => {
+    const revenueOrders = [
+      {
+        id: 'bill-1',
+        tableNumber: 5,
+        items: [{ menuItemId: 'item-1', nameVi: '1', price: 50000, quantity: 2 }],
+        status: 'completed',
+        totalPrice: 100000,
+        createdAt: '2026-07-06T12:30:00.000Z',
+      },
+    ] as Order[];
+
+    expect(enrichOrdersWithMenuCatalog(revenueOrders, items)[0].items[0]).toMatchObject({
+      menuItemId: 'item-1',
+      nameVi: 'Pho bo',
+      category: items[0].category,
+      price: 50000,
+      quantity: 2,
+    });
   });
 });

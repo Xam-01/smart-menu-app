@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { authApi, createApiClient, ownerApi, systemApi } from './api';
+import type { Order, Session } from './types';
 
 describe('createApiClient', () => {
   beforeEach(() => {
@@ -105,5 +106,30 @@ describe('frontend API coverage for backend routes', () => {
 describe('tablet payment surface', () => {
   it('exposes cash payment for a table session', async () => {
     expect(typeof (await import('./api')).tabletApi.cashPayment).toBe('function');
+  });
+
+  it('mock orders keep menu item names and categories for bill details', async () => {
+    const { createMockApiFetch } = await import('./mockApi');
+    const client = createApiClient({
+      baseUrl: 'http://localhost:3000/api/v1',
+      fetcher: createMockApiFetch(),
+    });
+
+    const session = await client.post<Session>('/sessions', {
+      restaurantId: 'restaurant-1',
+      tableNumber: 4,
+      qrSecret: 'mock-secret-4',
+    }, false);
+    const order = await client.post<Order>('/orders', {
+      sessionId: session.data.sessionId,
+      items: [{ menuItemId: 'item-1', quantity: 1 }],
+    }, false);
+
+    expect(order.data.items[0]).toMatchObject({
+      menuItemId: 'item-1',
+      category: expect.any(String),
+    });
+    expect(order.data.items[0].category).not.toBe('KhÃ¡c');
+    expect(order.data.items[0].nameVi).not.toMatch(/^\d+$/);
   });
 });

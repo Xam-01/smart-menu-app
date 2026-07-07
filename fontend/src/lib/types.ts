@@ -41,8 +41,10 @@ export type MenuStatus = 'draft' | 'published' | 'archived';
 
 export type Menu = {
   id: string;
+  name?: string;
   version: number;
   status: MenuStatus;
+  imageUrl?: string;
   ocrStatus?: 'pending' | 'processing' | 'completed' | 'failed';
   publishedAt?: string;
   archivedAt?: string;
@@ -109,7 +111,7 @@ export type PublicMenuItem = {
 
 export type PublicMenu = {
   restaurant: Pick<Restaurant, 'id' | 'name' | 'address' | 'description'>;
-  menu: Pick<Menu, 'id' | 'version' | 'publishedAt'>;
+  menu: Pick<Menu, 'id' | 'name' | 'version' | 'imageUrl' | 'publishedAt'>;
   categories: Record<string, PublicMenuItem[]>;
   guestAllergens: AllergenType[];
   language: string;
@@ -151,6 +153,7 @@ export type OrderItem = {
   menuItemId?: string;
   nameVi: string;
   name?: string;
+  category?: string;
   price: number;
   quantity: number;
   notes?: string;
@@ -164,6 +167,10 @@ export type Order = {
   allergyNotes?: string;
   customerNotes?: string;
   totalPrice: number;
+  paymentMethod?: string;
+  paymentToken?: string;
+  paidAt?: string;
+  billId?: string;
   createdAt: string;
   updatedAt?: string;
 };

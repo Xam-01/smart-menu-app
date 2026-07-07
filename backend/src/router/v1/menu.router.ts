@@ -10,6 +10,7 @@ import uploadMenu from 'src/controller/v1/menu/upload_menu';
 import getMenus from 'src/controller/v1/menu/get_menus';
 import publishMenu from 'src/controller/v1/menu/publish_menu';
 import deleteMenu from 'src/controller/v1/menu/delete_menu';
+import updateMenu from 'src/controller/v1/menu/update_menu';
 import createMenuItem from 'src/controller/v1/menu_item/create_menu_item';
 import getMenuItems from 'src/controller/v1/menu_item/get_menu_items';
 import updateMenuItem from 'src/controller/v1/menu_item/update_menu_item';
@@ -25,6 +26,17 @@ router.use(authenticate);
 router.post('/upload', uploadMenu);
 
 router.get('/', getMenus);
+
+router.patch(
+  '/:menuId',
+  [
+    param('menuId').notEmpty(),
+    body('name').optional().isLength({ max: 120 }).withMessage('Tên menu tối đa 120 ký tự'),
+    body('imageUrl').optional().isString(),
+  ],
+  validationError,
+  updateMenu,
+);
 
 router.delete(
   '/:menuId',

@@ -10,8 +10,10 @@ export type MenuStatus = 'draft' | 'published' | 'archived';
 
 export interface IMenu extends Document {
   restaurantId: Types.ObjectId;
+  name?: string;
   version: number;
   status: MenuStatus;
+  imageUrl?: string;
   originalImagePath?: string;
   ocrStatus?: 'pending' | 'processing' | 'completed' | 'failed';
   ocrJobId?: string;
@@ -28,6 +30,11 @@ const MenuSchema = new Schema<IMenu>(
       ref: 'Restaurant',
       required: true,
     },
+    name: {
+      type: String,
+      trim: true,
+      maxlength: 120,
+    },
     version: {
       type: Number,
       default: 1,
@@ -38,6 +45,9 @@ const MenuSchema = new Schema<IMenu>(
       default: 'draft',
     },
     originalImagePath: {
+      type: String,
+    },
+    imageUrl: {
       type: String,
     },
     ocrStatus: {

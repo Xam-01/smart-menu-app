@@ -30,8 +30,10 @@ const getMenus = async (req: Request, res: Response): Promise<void> => {
     message: 'Danh sách menu',
     data: menus.map((m) => ({
       id: m._id,
+      name: m.name,
       version: m.version,
       status: m.status,
+      imageUrl: m.imageUrl,
       ocrStatus: m.ocrStatus,
       publishedAt: m.publishedAt,
       archivedAt: m.archivedAt,

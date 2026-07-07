@@ -187,7 +187,10 @@ export const ownerApi = {
   updateRestaurant: (id: string, input: Partial<Restaurant>) =>
     api.patch<Restaurant>(`/restaurants/${id}`, input),
   getMenus: () => api.get<Menu[]>('/menus'),
-  uploadMenu: (imagePath?: string) => api.post<Menu>('/menus/upload', { imagePath }),
+  uploadMenu: (input?: { name?: string; imagePath?: string; imageUrl?: string }) =>
+    api.post<Menu>('/menus/upload', input ?? {}),
+  updateMenu: (menuId: string, input: { name?: string; imageUrl?: string }) =>
+    api.patch<Menu>(`/menus/${menuId}`, input),
   publishMenu: (menuId: string) => api.post<Menu>(`/menus/${menuId}/publish`),
   deleteMenu: (menuId: string) => api.delete<Menu>(`/menus/${menuId}`),
   getItems: (menuId: string, query?: { category?: string; status?: string }) =>

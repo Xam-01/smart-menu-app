@@ -54,14 +54,17 @@ const restaurant: Restaurant = {
 let menus: Menu[] = [
   {
     id: 'menu-1',
+    name: 'Menu lẩu tối',
     version: 1,
     status: 'published',
+    imageUrl: 'https://images.unsplash.com/photo-1529042410759-befb1204b468?auto=format&fit=crop&w=900&q=80',
     ocrStatus: 'completed',
     publishedAt: now,
     createdAt: now,
   },
   {
     id: 'menu-2',
+    name: 'Menu nháp cuối tuần',
     version: 2,
     status: 'draft',
     ocrStatus: 'pending',
@@ -247,13 +250,26 @@ export function createMockApiFetch(): typeof fetch {
       if (path === '/menus/upload' && method === 'POST') {
         const nextMenu: Menu = {
           id: `menu-${menus.length + 1}`,
+          name: body?.name || `Menu v${menus.length + 1}`,
           version: Math.max(...menus.map((menu) => menu.version)) + 1,
           status: 'draft',
+          imageUrl: body?.imageUrl,
           ocrStatus: 'pending',
           createdAt: new Date().toISOString(),
         };
         menus = [nextMenu, ...menus];
         return json(nextMenu, 'Mock menu uploaded', 201);
+      }
+
+      const menuUpdateMatch = path.match(/^\/menus\/([^/]+)$/);
+      if (menuUpdateMatch && method === 'PATCH') {
+        const menu = menus.find((item) => item.id === menuUpdateMatch[1]);
+        if (!menu) return fail('MENU_NOT_FOUND', 'Menu not found', 404);
+        Object.assign(menu, {
+          name: body?.name ?? menu.name,
+          imageUrl: body?.imageUrl ?? menu.imageUrl,
+        });
+        return json(menu, 'Mock menu updated');
       }
 
       const menuPublishMatch = path.match(/^\/menus\/([^/]+)\/publish$/);
@@ -382,6 +398,7 @@ export function createMockApiFetch(): typeof fetch {
             menuItemId: item.id,
             nameVi: item.nameVi,
             name: item.nameVi,
+            category: item.category,
             price: item.price,
             quantity: orderItem.quantity,
             notes: orderItem.notes,
@@ -455,9 +472,11 @@ function buildPublicMenu(sessionId: string | undefined, language: string): Publi
       description: restaurant.description,
     },
     menu: {
-      id: 'menu-1',
-      version: 1,
-      publishedAt: now,
+      id: menus.find((menu) => menu.status === 'published')?.id ?? 'menu-1',
+      name: menus.find((menu) => menu.status === 'published')?.name,
+      version: menus.find((menu) => menu.status === 'published')?.version ?? 1,
+      imageUrl: menus.find((menu) => menu.status === 'published')?.imageUrl,
+      publishedAt: menus.find((menu) => menu.status === 'published')?.publishedAt ?? now,
     },
     categories: grouped,
     guestAllergens,

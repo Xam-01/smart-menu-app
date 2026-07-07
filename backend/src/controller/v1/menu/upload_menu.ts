@@ -11,6 +11,11 @@ import type { Request, Response } from 'express';
 
 const uploadMenu = async (req: Request, res: Response): Promise<void> => {
   const ownerId = req.userId!;
+  const { name, imagePath, imageUrl } = req.body as {
+    name?: string;
+    imagePath?: string;
+    imageUrl?: string;
+  };
 
   const restaurant = await Restaurant.findOne({ ownerId });
   if (!restaurant) {
@@ -33,9 +38,11 @@ const uploadMenu = async (req: Request, res: Response): Promise<void> => {
 
   const newMenu = await Menu.create({
     restaurantId: restaurant._id,
+    name: name?.trim() || `Menu v${currentVersion + 1}`,
     version: currentVersion + 1,
     status: 'draft',
-    originalImagePath: req.body.imagePath || null,
+    originalImagePath: imagePath || null,
+    imageUrl: imageUrl || undefined,
     ocrStatus: 'pending',
     ocrJobId: `ocr-job-${Date.now()}`,
   });
@@ -49,8 +56,11 @@ const uploadMenu = async (req: Request, res: Response): Promise<void> => {
     message: 'Menu đã được gửi để xử lý OCR. Vui lòng chờ...',
     data: {
       menuId: newMenu._id,
+      id: newMenu._id,
+      name: newMenu.name,
       version: newMenu.version,
       status: newMenu.status,
+      imageUrl: newMenu.imageUrl,
       ocrStatus: newMenu.ocrStatus,
       ocrJobId: newMenu.ocrJobId,
     },

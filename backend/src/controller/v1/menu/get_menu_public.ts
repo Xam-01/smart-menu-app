@@ -115,7 +115,9 @@ const getMenuPublic = async (req: Request, res: Response): Promise<void> => {
       },
       menu: {
         id: menu._id,
+        name: menu.name,
         version: menu.version,
+        imageUrl: menu.imageUrl,
         publishedAt: menu.publishedAt,
       },
       categories: grouped,
